@@ -1,4 +1,6 @@
-#include <SDL2/SDL.h>
+#ifndef GB_H
+#define GB_H
+
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -6,119 +8,38 @@
 #include <iostream>
 #include <fstream>
 #include <iterator>
-#include <thread>
-#include <chrono>
 #include <sstream>
 
-typedef uint8_t byte;
-
-class Registers {
-    public:
-        union {
-            struct { byte f; byte a; };
-            uint16_t af;
-        };
-        union {
-            struct { byte c; byte b; };
-            uint16_t bc;
-        };
-        union {
-            struct { byte e; byte d; };
-            uint16_t de;
-        };
-        union {
-            struct { byte l; byte h; };
-            uint16_t hl;
-        };
-        uint16_t sp;
-        uint16_t pc;
-
-        // f register:
-        // XXXXZNHC
-        //     8421
-        void set_f(bool b, int flag) {
-            if(b){
-                this->f = this->f | flag;
-            } else {
-                this->f = this->f & (15 - flag);
-            }
-        }
-        bool get_f(byte mask) {
-            return (this->f & mask) != 0;
-        }
-        void set_z(bool b) { set_f(b, 8); }
-        void set_n(bool b) { set_f(b, 4); }
-        void set_h(bool b) { set_f(b, 2); }
-        void set_c(bool b) { set_f(b, 1); }
-        bool get_z() { return get_f(8); }
-        bool get_n() { return get_f(4); }
-        bool get_h() { return get_f(2); }
-        bool get_c() { return get_f(1); }
-
-        std::string to_dbg_str() {
-            std::ostringstream oss;
-            oss << "A: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->a << " " 
-                << "F: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->f << " " 
-                << "B: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->b << " " 
-                << "C: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->c << " " 
-                << "D: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->d << " " 
-                << "E: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->e << " " 
-                << "H: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->h << " " 
-                << "L: " << std::hex << std::setw(2) << std::setfill('0') << (unsigned int) this->l << " " 
-                << "SP: " << std::hex << std::setw(4) << std::setfill('0') << (unsigned int) this->sp << " "
-                << "PC: " << std::hex << std::setw(4) << std::setfill('0') << (unsigned int) this->pc << " ";
-            if (get_z()) { oss << "Z"; } else { oss << "-"; }
-            if (get_n()) { oss << "N"; } else { oss << "-"; }
-            if (get_h()) { oss << "H"; } else { oss << "-"; }
-            if (get_c()) { oss << "C"; } else { oss << "-"; }
-            return oss.str();
-        }
-};
-class Video {
-    public:
-        SDL_Window* win;
-        void createWindow();
-        void set_lcdc(byte) {
-            
-        }
-        Video();
-        ~Video();
-};
-
-class Memory {
-    public:
-        std::vector<byte> mem;
-        Video& video;
-
-        void write(size_t addr, byte b) {
-            if(addr == 0xff40) {
-                int i;
-                std::cin >> i;
-            }
-            std::cout << "Write 0x" << std::hex << addr << ": 0x" << std::hex << std::setw(2) << std::setfill ('0') << (unsigned int) b << std::endl;
-            mem[addr] = b;
-        }
-
-        byte read(size_t n) {
-            return mem[n];
-        }
-
-        Memory(Video& video) : video(video), mem(64*1024) {}
-};
-
+#include "registers.h"
+#include "memory.h"
+#include "video.h"
 
 class GB {
     public:
         Registers regs;
         Memory mmu;
         Video video;
-        int ints;
-        size_t clock = 238;
-        std::time_t cycletime;
+        bool ints;
+        long long instr_count;
+        int threecycle;
+        byte timer;
+        byte timer_start;
+        bool timer_enabled;
+        int timer_clock;
         std::string filename;
-        GB(std::string filename) : filename(filename), regs(), video(), mmu(video), ints(0) {
+        bool evblank;
+        bool elcd_stat;
+        bool etimer;
+        bool eserial;
+        bool ejoypad;
+        bool ivblank;
+        bool ilcd_stat;
+        bool itimer;
+        bool iserial;
+        bool ijoypad;
+        GB(std::string filename) : filename(filename), regs(), video(), mmu(video, *this), ints(true) {
             std::ifstream filestream(filename, std::ios::binary);
-            filestream.read(reinterpret_cast<char*>(mmu.mem.data()), 32 * 1024);
+            filestream.read(reinterpret_cast<char*>(this->mmu.mem.data()), 32 * 1024);
             filestream.close();
             this->regs.a = 0x11;
             this->regs.f = 0x80;
@@ -126,6 +47,44 @@ class GB {
             this->regs.e = 0x56;
             this->regs.sp = 0xfffe;
             this->regs.pc = 0x0100;
+            this->mmu.write(0xff05, 0x00);
+            this->mmu.write(0xff06, 0x00);
+            this->mmu.write(0xff07, 0x00);
+            this->mmu.write(0xff10, 0x80);
+            this->mmu.write(0xff11, 0xbf);
+            this->mmu.write(0xff12, 0x3f);
+            this->mmu.write(0xff14, 0xbf);
+            this->mmu.write(0xff16, 0x3f);
+            this->mmu.write(0xff17, 0x00);
+            this->mmu.write(0xff19, 0xbf);
+            this->mmu.write(0xff1a, 0x7a);
+            this->mmu.write(0xff1b, 0xff);
+            this->mmu.write(0xff1c, 0x9f);
+            this->mmu.write(0xff1e, 0x8f);
+            this->mmu.write(0xff20, 0xff);
+            this->mmu.write(0xff21, 0x00);
+            this->mmu.write(0xff22, 0x00);
+            this->mmu.write(0xff23, 0xbf);
+            this->mmu.write(0xff24, 0x77);
+            this->mmu.write(0xff25, 0xf3);
+            this->mmu.write(0xff26, 0xf1);
+            this->mmu.write(0xff40, 0x91);
+            this->mmu.write(0xff42, 0x00);
+            this->mmu.write(0xff43, 0x00);
+            this->mmu.write(0xff45, 0x0);
+            this->mmu.write(0xff47, 0xfc);
+            this->mmu.write(0xff48, 0xff);
+            this->mmu.write(0xff49, 0xff);
+            this->mmu.write(0xff4a, 0x00);
+            this->mmu.write(0xff4b, 0x00);
+            this->mmu.write(0xffff, 0x00);
+
+
+            this->ivblank = false;
+            this->ilcd_stat = false;
+            this->itimer = false;
+            this->iserial = false;
+            this->ijoypad = false;
         }
         std::string disassemble_addr(size_t addr, byte opode, std::vector<byte> args);
         void gameloop();
@@ -172,66 +131,108 @@ class GB {
 
         void checkvideo();
 
-        bool step();
+        int cpustep();
 
-        void sleep_cycles(size_t n) {
-            std::this_thread::sleep_for(std::chrono::nanoseconds(4 * n * this->clock));
+        void set_timer(byte b) {
+            this->timer = b;
         }
 
-        void nop() {
-            this->sleep_cycles(1);
+        void set_timer_start(byte b) {
+            this->timer_start = b;
         }
 
-        void jp(uint16_t addr) {
+        void set_timer_control(byte b) {
+            this->timer_enabled = b & 4 != 0;
+            switch(b & 0x03) {
+            case 0:
+                this->timer_clock = 1024;
+                break;
+            case 1:
+                this->timer_clock = 16;
+                break;
+            case 2:
+                this->timer_clock = 64;
+                break;
+            case 3:
+                this->timer_clock = 256;
+                break;
+            default:
+                __DIE__("Timer fault")
+            }
+        }
+
+        void set_ints(byte b) {
+            this->ivblank = b & 1 != 0;
+            this->ilcd_stat = b & 2 != 0;
+            this->itimer = b & 4 != 0;
+            this->iserial = b & 8 != 0;
+            this->ijoypad = b & 16 != 0;
+        }
+
+        void enable_ints(byte b) {
+            this->evblank = b & 1 == 0;
+            this->elcd_stat = b & 2 == 0;
+            this->etimer = b & 4 == 0;
+            this->eserial = b & 8 == 0;
+            this->ejoypad = b & 16 == 0;
+        }
+
+        size_t nop() {
+            return 1;
+        }
+
+        size_t jp(uint16_t addr) {
             this->regs.pc = addr;
-            this->sleep_cycles(4);
+            return 4;
         }
 
-        void jrnz(byte offset) {
+        size_t jrnz(byte offset) {
             if (!this->regs.get_z()) {
                 this->regs.pc = this->regs.pc + static_cast<std::make_signed_t<int8_t>>(offset);
-                this->sleep_cycles(1);
+                return 1;
             }
-            this->sleep_cycles(2);
+            return 2;
         }
 
-        void opxor(byte a, byte b) {
+        size_t opxor(byte a, byte b) {
             this->regs.a = a ^ b;
             this->regs.set_z(this->regs.a == 0);
             this->regs.set_n(false);
             this->regs.set_h(false);
             this->regs.set_c(false);
-            this->sleep_cycles(1);
+            return 1;
         }
-        void ld_mem(uint16_t dst, byte val) {
+        size_t ld_mem(uint16_t dst, byte val) {
             this->mmu.write(dst, val);            
-            this->sleep_cycles(2);
+            return 2;
         }
-        void ld_reg8(uint8_t* ref, uint8_t val) {
+        size_t ld_reg8(uint8_t* ref, uint8_t val) {
             (*ref) = val;
-            this->sleep_cycles(2);
+            return 2;
         }
-        void ld_reg16(uint16_t* ref, uint16_t val) {
+        size_t ld_reg16(uint16_t* ref, uint16_t val) {
             (*ref) = val;
-            this->sleep_cycles(3);
+            return 3;
         }
-        void dec(uint8_t* reg) {
+        size_t dec(uint8_t* reg) {
             this->regs.set_h((*reg) & 0xf - (1 & 0xf) < 0);
             this->regs.set_n(true);
             (*reg)--;
             this->regs.set_z((*reg) == 0);
-            this->sleep_cycles(1);
+            return 1;
         }
 
-        void di() {
+        size_t di() {
             this->ints = false;
-            this->sleep_cycles(1);
+            return 1;
         }
 
-        void cp(byte n) {
+        size_t cp(byte n) {
             this->regs.set_n(true);
             this->regs.set_z(this->regs.a == n);
             this->regs.set_c(this->regs.a < n);
-            this->sleep_cycles(2);
+            return 2;
         }
 };
+
+#endif
